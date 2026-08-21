@@ -75,6 +75,7 @@ function lateNight(){ return new Date().getHours() < 4; }
 function addDays(iso, n){ const t = new Date(iso+'T12:00:00'); t.setDate(t.getDate()+n); const p = x => String(x).padStart(2,'0'); return t.getFullYear()+'-'+p(t.getMonth()+1)+'-'+p(t.getDate()); }
 function toast(t){ const el = $('#toast'); el.textContent = t; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'), 1800); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function stackItems(q){ return (q.options && q.options.stack) || []; }
 
 async function boot(){
   const { data:{ session } } = await sb.auth.getSession();
@@ -134,12 +135,18 @@ function control(q){
     return '<div class="card">'+h+'</div>';
   }
   if(q.input_type === 'toggle'){
-    const on = v === true || (v && v.on);
-    const offSel = v === false || (v && v.on === false);
+    const on = v === true || (v && (v.on === true || v.taken === true));
+    const offSel = v === false || (v && (v.on === false || v.taken === false));
     let h = '<div class="row"><div><div class="qlabel">'+esc(q.label)+'</div>'+(q.help_text?'<div class="help">'+esc(q.help_text)+'</div>':'')+'</div>';
     h += '<div class="seg"><button class="chip '+(on?'on':'')+'" data-k="'+key+'" data-c="tog" data-v="1">Yes</button><button class="chip '+(offSel?'on':'')+'" data-k="'+key+'" data-c="tog" data-v="0">No</button></div></div>';
     if(q.branch && q.branch.type === 'reveal_number'){
       h += '<div class="branch '+(on?'show':'')+'" id="rn_'+key+'"><div class="bp">'+esc(q.branch.label)+'</div><input type="number" inputmode="decimal" step="'+(q.branch.step||1)+'" min="'+(q.branch.min||0)+'" max="'+(q.branch.max||24)+'" value="'+esc(v&&v.hours!=null?v.hours:'')+'" data-nk="'+key+'"></div>';
+    }
+    if(q.branch && q.branch.type === 'stack_list'){
+      h += stackBranch(q, on);
+    }
+    if(q.branch && q.branch.type === 'detail_reveal'){
+      h += detailBranch(q, on);
     }
     return '<div class="card">'+h+'</div>';
   }
@@ -156,14 +163,55 @@ function control(q){
   return '';
 }
 
+function stackBranch(q, on){
+  const key = q.key, cur = answers[key];
+  const items = stackItems(q);
+  const took = new Set((cur && cur.taken === false && cur.took) || []);
+  let h = '<div class="branch '+(!on && (key in answers) ?'show':'')+'" id="sl_'+key+'" style="margin:6px 0 10px"><div class="bp">'+esc(q.branch.label||'Which ones did you take?')+'</div>';
+  if(items.length){
+    h += '<div class="chips">';
+    items.forEach(it => { h += '<button class="chip '+(took.has(it.name)?'on':'')+'" data-sk="'+key+'" data-sn="'+esc(it.name)+'">'+esc(it.name)+'</button>'; });
+    h += '</div>';
+  } else {
+    h += '<div class="small">Your stack is empty. Add items in Settings.</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function detailBranch(q, on){
+  const key = q.key, cur = answers[key];
+  const val = f => (cur && typeof cur === 'object' && cur[f.key] != null) ? cur[f.key] : null;
+  let h = '<div class="branch '+(on?'show':'')+'" id="dl_'+key+'" style="margin:6px 0 10px"><div class="bp">A little more detail (optional)</div>';
+  (q.branch.fields||[]).forEach(f => {
+    if(f.type === 'number'){
+      h += '<div class="help" style="margin-top:8px">'+esc(f.label)+'</div><input type="number" inputmode="decimal" step="'+(f.step||1)+'" min="0" value="'+esc(val(f)!=null?val(f):'')+'" data-dnf="'+f.key+'" data-dnk="'+key+'">';
+    } else if(f.type === 'toggle'){
+      h += '<div class="help" style="margin-top:8px">'+esc(f.label)+'</div><div class="seg" style="margin-top:6px"><button class="chip '+(val(f)===true?'on':'')+'" data-dk="'+key+'" data-df="'+f.key+'" data-dv="__yes">Yes</button><button class="chip '+(val(f)===false?'on':'')+'" data-dk="'+key+'" data-df="'+f.key+'" data-dv="__no">No</button></div>';
+    } else {
+      h += '<div class="help" style="margin-top:8px">'+esc(f.label)+'</div><div class="chips">';
+      (f.options||[]).forEach(o => { h += '<button class="chip '+(val(f)===o.value?'on':'')+'" data-dk="'+key+'" data-df="'+f.key+'" data-dv="'+esc(o.value)+'">'+esc(o.label)+'</button>'; });
+      h += '</div>';
+    }
+  });
+  h += '</div>';
+  return h;
+}
+
 function defRow(q){
   const key = q.key;
   const cur = (key in answers) ? answers[key] : defOf(q);
-  const on = cur === true || (cur && cur.on);
+  const on = cur === true || (cur && (cur.on === true || cur.taken === true));
   let h = '<div class="defrow"><div class="qlabel" style="font-weight:500">'+esc(q.label)+'</div>';
   h += '<div class="seg"><button class="chip '+(on?'on':'')+'" data-k="'+key+'" data-c="tog" data-v="1">Yes</button><button class="chip '+(!on?'on':'')+'" data-k="'+key+'" data-c="tog" data-v="0">No</button></div></div>';
   if(q.branch && q.branch.type === 'reveal_number'){
     h += '<div class="branch '+(on?'show':'')+'" id="rn_'+key+'" style="margin:6px 0 10px"><div class="bp">'+esc(q.branch.label)+'</div><input type="number" inputmode="decimal" step="'+(q.branch.step||1)+'" value="'+esc(cur&&cur.hours!=null?cur.hours:'')+'" data-nk="'+key+'"></div>';
+  }
+  if(q.branch && q.branch.type === 'stack_list'){
+    h += stackBranch(q, on);
+  }
+  if(q.branch && q.branch.type === 'detail_reveal'){
+    h += detailBranch(q, on);
   }
   return h;
 }
@@ -265,13 +313,53 @@ function wire(){
   });
   document.querySelectorAll('[data-c=tog]').forEach(el => el.onclick = () => {
     const k = el.dataset.k, on = el.dataset.v === '1'; const q = Q.find(x=>x.key===k);
-    if(q.branch && q.branch.type==='reveal_number'){
+    if(q.branch && q.branch.type === 'stack_list'){
+      const items = stackItems(q);
+      if(on){ answers[k] = { taken: true, stack: items }; }
+      else {
+        const prev = answers[k];
+        const kept = (prev && prev.taken === false && Array.isArray(prev.took)) ? prev.took : [];
+        answers[k] = { taken: false, took: kept, stack: items };
+      }
+      const sl = document.getElementById('sl_'+k); if(sl) sl.classList.toggle('show', !on);
+    } else if(q.branch && q.branch.type === 'detail_reveal'){
+      if(on){ const prev = answers[k]; answers[k] = (prev && typeof prev === 'object' && prev.on) ? prev : { on: true }; }
+      else { answers[k] = false; }
+      const dl = document.getElementById('dl_'+k); if(dl) dl.classList.toggle('show', on);
+    } else if(q.branch && q.branch.type==='reveal_number'){
       const hrsEl = document.querySelector('[data-nk="'+k+'"]');
       answers[k] = on ? { on: true, hours: hrsEl && hrsEl.value !== '' ? +hrsEl.value : null } : false;
       const rn = document.getElementById('rn_'+k); if(rn) rn.classList.toggle('show', on);
     } else { answers[k] = on; }
     touched.add(k);
     const seg = el.parentElement; seg.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === el));
+  });
+  document.querySelectorAll('[data-sk]').forEach(el => el.onclick = () => {
+    const k = el.dataset.sk, n = el.dataset.sn; const q = Q.find(x=>x.key===k);
+    let cur = answers[k];
+    if(!cur || cur.taken !== false){ cur = { taken: false, took: [], stack: stackItems(q) }; }
+    if(!Array.isArray(cur.took)) cur.took = [];
+    const i = cur.took.indexOf(n);
+    if(i >= 0) cur.took.splice(i, 1); else cur.took.push(n);
+    answers[k] = cur; touched.add(k);
+    el.classList.toggle('on', i < 0);
+  });
+  document.querySelectorAll('[data-dk]').forEach(el => el.onclick = () => {
+    const k = el.dataset.dk, f = el.dataset.df; let v = el.dataset.dv;
+    if(v === '__yes') v = true; else if(v === '__no') v = false;
+    let cur = answers[k];
+    if(!cur || typeof cur !== 'object'){ cur = { on: true }; answers[k] = cur; }
+    const was = el.classList.contains('on');
+    el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+    if(was){ delete cur[f]; } else { cur[f] = v; el.classList.add('on'); }
+    touched.add(k);
+  });
+  document.querySelectorAll('[data-dnf]').forEach(el => el.oninput = () => {
+    const k = el.dataset.dnk, f = el.dataset.dnf;
+    let cur = answers[k];
+    if(!cur || typeof cur !== 'object'){ cur = { on: true }; answers[k] = cur; }
+    cur[f] = el.value !== '' ? +el.value : null;
+    touched.add(k);
   });
   document.querySelectorAll('[data-c=sel]').forEach(el => el.onclick = () => {
     const k = el.dataset.k; answers[k] = el.dataset.v; touched.add(k);
@@ -290,6 +378,13 @@ async function save(){
     if(!(q.key in answers) && defOf(q) != null) answers[q.key] = defOf(q);
   });
   if(missing.length){ toast('Missing: ' + missing.join(', ')); return; }
+  Q.forEach(q => {
+    if(q.branch && q.branch.type === 'stack_list'){
+      const v = answers[q.key], items = stackItems(q);
+      if(v === true || v == null) answers[q.key] = { taken: true, stack: items };
+      else if(v === false) answers[q.key] = { taken: false, took: [], stack: items };
+    }
+  });
   const d = entryDate();
   const { error: e1 } = await sb.from('daily_entries').upsert({ entry_date: d, note: note || null, submitted_at: new Date().toISOString() }, { onConflict: 'entry_date' });
   if(e1){ toast(e1.message); return; }
@@ -337,6 +432,23 @@ function renderSettings(){
     });
     h += '</div>';
   });
+  const sq = Q.find(q => q.branch && q.branch.type === 'stack_list');
+  h += '<div class="eyebrow">Peptide + supplement stack</div><div class="card">';
+  if(sq){
+    const items = stackItems(sq);
+    if(items.length){
+      items.forEach((it, i) => { h += '<div class="defrow"><div><div style="font-size:14px">'+esc(it.name)+'</div><div class="qmeta">'+esc(it.type||'')+'</div></div><button class="ghost" data-sx="'+i+'">Remove</button></div>'; });
+    } else {
+      h += '<div class="small">Nothing in the stack yet. Add your first item below.</div>';
+    }
+    h += '<input type="text" id="st_name" placeholder="Item and dose, e.g. Creatine 5g">';
+    h += '<select id="st_type"><option value="peptide">Peptide</option><option value="supplement">Supplement</option></select>';
+    h += '<button class="big" id="st_add" style="margin-top:12px">Add to stack</button>';
+    h += '<div class="help" style="margin-top:8px">Edits apply from tonight onward. Every saved day keeps its own copy of the stack as it was, so history never changes. A dose change should be an edit here (remove + re-add with the new dose).</div>';
+  } else {
+    h += '<div class="small">No stack question found in the registry.</div>';
+  }
+  h += '</div>';
   h += '<div class="eyebrow">Add a question</div><div class="card">';
   h += '<input type="text" id="nq_label" placeholder="Label (what the form shows)">';
   h += '<select id="nq_sec"><option value="outcomes">Outcomes</option><option value="behaviors" selected>Behaviors</option><option value="defaults">Auto-default (yes/no)</option></select>';
@@ -361,6 +473,27 @@ function renderSettings(){
       if(error) toast(error.message); else { await loadAll(); render(); }
     }
   });
+  async function saveStack(items){
+    const opts = Object.assign({}, sq.options, { stack: items });
+    const { error } = await sb.from('survey_questions').update({ options: opts }).eq('id', sq.id);
+    if(error) toast(error.message); else { toast('Stack updated'); await loadAll(); render(); }
+  }
+  if(sq){
+    document.querySelectorAll('[data-sx]').forEach(b => b.onclick = () => {
+      const items = stackItems(sq).slice();
+      items.splice(+b.dataset.sx, 1);
+      saveStack(items);
+    });
+    const stAdd = document.getElementById('st_add');
+    if(stAdd) stAdd.onclick = () => {
+      const n = document.getElementById('st_name').value.trim();
+      if(!n){ toast('Needs a name'); return; }
+      const items = stackItems(sq).slice();
+      if(items.some(it => it.name.toLowerCase() === n.toLowerCase())){ toast('Already in the stack'); return; }
+      items.push({ name: n, type: document.getElementById('st_type').value });
+      saveStack(items);
+    };
+  }
   $('#nq_add').onclick = async () => {
     const label = $('#nq_label').value.trim(); if(!label){ toast('Needs a label'); return; }
     const sec = $('#nq_sec').value; let type = $('#nq_type').value;
