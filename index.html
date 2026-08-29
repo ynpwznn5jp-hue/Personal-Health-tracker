@@ -67,9 +67,11 @@ const { createClient } = window.supabase;
 const sb = createClient('https://xclakdqywukfccfggzyn.supabase.co','eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhjbGFrZHF5d3VrZmNjZmdnenluIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxNTIwNDQsImV4cCI6MjEwMjcyODA0NH0.X3dwADB9gxU3sxeoHjNRxoT6ejSH7Q2HCHZmm-GPYRc');
 const $ = s => document.querySelector(s);
 const app = $('#app');
-let Q = [], answers = {}, touched = new Set(), loaded = new Set(), branchTx = {}, note = '', existing = false, tab = location.hash === '#ping' ? 'ping' : 'today';
-const PING_ACTS = ['Studying','Class','Work','Social','Eating','Chores','Exercise','Commuting','Phone / scrolling','Entertainment','Meditating','Resting','Other'];
-const PING_SOURCE = location.hash === '#ping' ? 'notification' : 'manual';
+let Q = [], answers = {}, touched = new Set(), loaded = new Set(), branchTx = {}, note = '', existing = false;
+let evA = {}, evT = new Set(), evL = new Set();
+let moA = {}, moT = new Set(), moL = new Set(), moExisting = false;
+const bootHour = new Date().getHours();
+let tab = location.hash === '#morning' ? 'morning' : (location.hash === '#evening' ? 'today' : ((bootHour >= 4 && bootHour < 14) ? 'morning' : 'today'));
 
 function entryDate(){ const d = new Date(Date.now() - 4*3600*1000); const p = n => String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
 function lateNight(){ return new Date().getHours() < 4; }
@@ -77,6 +79,8 @@ function addDays(iso, n){ const t = new Date(iso+'T12:00:00'); t.setDate(t.getDa
 function toast(t){ const el = $('#toast'); el.textContent = t; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'), 1800); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function stackItems(q){ return (q.options && q.options.stack) || []; }
+function evQs(){ return Q.filter(q => q.in_evening !== false); }
+function moQs(){ return Q.filter(q => q.in_morning === true).map(q => Object.assign({}, q, { label: q.morning_label || q.label, branch: null })); }
 
 async function boot(){
   const { data:{ session } } = await sb.auth.getSession();
@@ -99,23 +103,27 @@ async function loadAll(){
   const { data: qs, error } = await sb.from('survey_questions').select('*').eq('active', true).order('sort_order');
   if(error){ toast(error.message); return; }
   Q = qs || [];
-  answers = {}; touched = new Set(); loaded = new Set(); branchTx = {}; note=''; existing = false;
+  evA = {}; evT = new Set(); evL = new Set(); moA = {}; moT = new Set(); moL = new Set(); branchTx = {}; note=''; existing = false; moExisting = false;
   const d = entryDate();
+  const byId = {}; Q.forEach(q => byId[q.id] = q);
   const { data: ent } = await sb.from('daily_entries').select('note').eq('entry_date', d).maybeSingle();
   if(ent){ existing = true; note = ent.note || ''; }
   const { data: ans } = await sb.from('daily_answers').select('question_id,value,touched').eq('entry_date', d);
-  const byId = {}; Q.forEach(q => byId[q.id] = q);
-  (ans||[]).forEach(a => { const q = byId[a.question_id]; if(q){ answers[q.key] = a.value; loaded.add(q.key); if(a.touched) touched.add(q.key); } });
+  (ans||[]).forEach(a => { const q = byId[a.question_id]; if(q){ evA[q.key] = a.value; evL.add(q.key); if(a.touched) evT.add(q.key); } });
+  const { data: ment } = await sb.from('morning_entries').select('entry_date').eq('entry_date', d).maybeSingle();
+  if(ment) moExisting = true;
+  const { data: mans } = await sb.from('morning_answers').select('question_id,value,touched').eq('entry_date', d);
+  (mans||[]).forEach(a => { const q = byId[a.question_id]; if(q){ moA[q.key] = a.value; moL.add(q.key); if(a.touched) moT.add(q.key); } });
   const { data: att } = await sb.from('attributions').select('question_id,body').eq('entry_date', d);
   (att||[]).forEach(a => { const q = byId[a.question_id]; if(q) branchTx[q.key] = a.body; });
 }
 
 function render(){
-  if(tab==='today') renderToday(); else if(tab==='ping') renderPing(); else renderSettings();
+  if(tab==='today') renderToday(); else if(tab==='morning') renderMorning(); else renderSettings();
 }
 function tabBar(){
   let bar = '<div class="tabs">';
-  [['today','Today'],['ping','Ping'],['settings','Settings']].forEach(p => { bar += '<button class="tab '+(tab===p[0]?'on':'')+'" data-t="'+p[0]+'">'+p[1]+'</button>'; });
+  [['morning','Morning'],['today','Evening'],['settings','Settings']].forEach(p => { bar += '<button class="tab '+(tab===p[0]?'on':'')+'" data-t="'+p[0]+'">'+p[1]+'</button>'; });
   bar += '</div>';
   app.insertAdjacentHTML('beforeend', bar);
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
@@ -254,16 +262,49 @@ function defRow(q){
   return h;
 }
 
-async function renderToday(){
+function renderMorning(){
+  answers = moA; touched = moT; loaded = moL;
   const d = entryDate();
+  const MQ = moQs();
+  let h = '<header><h1>'+(moExisting?'Update this morning':'Morning check-in')+'</h1><div class="date">'+d+' · how things are so far today</div></header>';
+  h += '<div style="height:10px"></div>';
+  if(!MQ.length){ h += '<div class="card"><div class="small">No questions are flagged for the morning check-in.</div></div>'; }
+  MQ.forEach(q => h += control(q));
+  h += '<button class="big" id="msave">'+(moExisting?'Update this morning':'Save morning')+'</button><div style="height:8px"></div>';
+  app.innerHTML = h;
+  tabBar();
+  wire();
+  const sv = document.getElementById('msave'); if(sv) sv.onclick = saveMorning;
+}
+
+async function saveMorning(){
+  const MQ = moQs();
+  const missing = [];
+  MQ.forEach(q => {
+    if(!(q.key in answers)){ if(defOf(q) != null) answers[q.key] = defOf(q); else missing.push(q.label); }
+  });
+  if(missing.length){ toast('Missing: ' + missing.join(', ')); return; }
+  const d = entryDate();
+  const { error: e1 } = await sb.from('morning_entries').upsert({ entry_date: d, submitted_at: new Date().toISOString() }, { onConflict: 'entry_date' });
+  if(e1){ toast(e1.message); return; }
+  const rows = MQ.map(q => ({ entry_date: d, question_id: q.id, value: answers[q.key], touched: touched.has(q.key) || loaded.has(q.key) }));
+  const { error: e2 } = await sb.from('morning_answers').upsert(rows, { onConflict: 'entry_date,question_id' });
+  if(e2){ toast(e2.message); return; }
+  moExisting = true; toast('Morning saved'); render();
+}
+
+async function renderToday(){
+  answers = evA; touched = evT; loaded = evL;
+  const d = entryDate();
+  const EQ = evQs();
   let h = '<header><h1>'+(existing?'Update today':'Evening check-in')+'</h1><div class="date">'+d+(lateNight()?' · after midnight, logging for yesterday':'')+'</div><div class="dots" id="dots"></div></header>';
   h += '<div id="monthly"></div>';
   h += '<div class="eyebrow">Outcomes</div>';
-  Q.filter(q=>q.section==='outcomes').forEach(q => h += control(q));
+  EQ.filter(q=>q.section==='outcomes').forEach(q => h += control(q));
   h += '<div class="eyebrow">Behaviors</div>';
-  Q.filter(q=>q.section==='behaviors').forEach(q => h += control(q));
+  EQ.filter(q=>q.section==='behaviors').forEach(q => h += control(q));
   h += '<div class="eyebrow">Quick confirm · tap only if different</div><div class="card">';
-  Q.filter(q=>q.section==='defaults').forEach(q => h += defRow(q));
+  EQ.filter(q=>q.section==='defaults').forEach(q => h += defRow(q));
   h += '</div>';
   h += '<div id="recall"></div>';
   h += '<div class="card"><div class="qlabel">Anything worth noting? <span class="qmeta">optional</span></div><textarea id="note">'+esc(note)+'</textarea></div>';
@@ -450,14 +491,15 @@ function wire(){
 }
 
 async function save(){
+  const EQ = evQs();
   const missing = [];
-  Q.forEach(q => {
+  EQ.forEach(q => {
     if(q.section === 'defaults') { if(!(q.key in answers)) answers[q.key] = defOf(q); return; }
     if(defOf(q) == null && !(q.key in answers)) missing.push(q.label);
     if(!(q.key in answers) && defOf(q) != null) answers[q.key] = defOf(q);
   });
   if(missing.length){ toast('Missing: ' + missing.join(', ')); return; }
-  Q.forEach(q => {
+  EQ.forEach(q => {
     if(q.branch && q.branch.type === 'stack_list'){
       const v = answers[q.key], items = stackItems(q);
       if(v === true || v == null) answers[q.key] = { taken: true, stack: items };
@@ -467,57 +509,14 @@ async function save(){
   const d = entryDate();
   const { error: e1 } = await sb.from('daily_entries').upsert({ entry_date: d, note: note || null, submitted_at: new Date().toISOString() }, { onConflict: 'entry_date' });
   if(e1){ toast(e1.message); return; }
-  const rows = Q.map(q => ({ entry_date: d, question_id: q.id, value: answers[q.key], touched: touched.has(q.key) || loaded.has(q.key) }));
+  const rows = EQ.map(q => ({ entry_date: d, question_id: q.id, value: answers[q.key], touched: touched.has(q.key) || loaded.has(q.key) }));
   const { error: e2 } = await sb.from('daily_answers').upsert(rows, { onConflict: 'entry_date,question_id' });
   if(e2){ toast(e2.message); return; }
   await sb.from('attributions').delete().eq('entry_date', d);
   const atts = [];
-  Q.forEach(q => { if(q.branch && q.branch.type==='extreme_text' && branchTx[q.key] && branchTx[q.key].trim()){ const v = answers[q.key]; if(v >= q.branch.high_at || v <= q.branch.low_at){ atts.push({ entry_date: d, question_id: q.id, direction: v >= q.branch.high_at ? 'high' : 'low', body: branchTx[q.key].trim() }); } } });
+  EQ.forEach(q => { if(q.branch && q.branch.type==='extreme_text' && branchTx[q.key] && branchTx[q.key].trim()){ const v = answers[q.key]; if(v >= q.branch.high_at || v <= q.branch.low_at){ atts.push({ entry_date: d, question_id: q.id, direction: v >= q.branch.high_at ? 'high' : 'low', body: branchTx[q.key].trim() }); } } });
   if(atts.length){ await sb.from('attributions').insert(atts); }
   existing = true; toast('Saved'); render();
-}
-
-async function renderPing(){
-  let act = null, pres = null, feel = null, energy = null, extraVal = null, extra = null;
-  try {
-    const { data: pool } = await sb.from('ping_extras').select('*').eq('active', true);
-    if(pool && pool.length) extra = pool[Math.floor(Math.random()*pool.length)];
-  } catch(e){}
-  let h = '<header><h1>Right now</h1><div class="date">30 seconds, honest answers</div></header>';
-  h += '<div class="eyebrow">What are you doing?</div><div class="card"><div class="chips" id="pacts">';
-  PING_ACTS.forEach(a => h += '<button class="chip" data-a="'+esc(a)+'">'+esc(a)+'</button>');
-  h += '</div></div>';
-  h += '<div class="eyebrow">State</div>';
-  h += '<div class="card"><div class="row"><div class="qlabel">How present are you?</div><div class="val unset" id="pv">–</div></div><input type="range" min="0" max="10" value="5" id="pr"></div>';
-  h += '<div class="card"><div class="row"><div class="qlabel">How do you feel?</div><div class="val unset" id="fv">–</div></div><input type="range" min="0" max="10" value="5" id="fr"></div>';
-  h += '<div class="card"><div class="row"><div class="qlabel">Energy right now</div><div class="val unset" id="ev">–</div></div><input type="range" min="0" max="10" value="5" id="er"></div>';
-  if(extra){
-    if(extra.input_type === 'slider'){
-      h += '<div class="card"><div class="row"><div class="qlabel">'+esc(extra.label)+'</div><div class="val unset" id="xv">–</div></div><input type="range" min="0" max="10" value="5" id="xr"></div>';
-    } else {
-      h += '<div class="card"><div class="row"><div class="qlabel">'+esc(extra.label)+'</div><div class="seg" id="xseg"><button class="chip" data-x="1">Yes</button><button class="chip" data-x="0">No</button></div></div></div>';
-    }
-  }
-  h += '<button class="big" id="psave">Log ping</button><div class="small" id="pcount" style="margin-top:10px"></div>';
-  app.innerHTML = h;
-  tabBar();
-  document.querySelectorAll('#pacts .chip').forEach(c => c.onclick = () => { act = c.dataset.a; document.querySelectorAll('#pacts .chip').forEach(x=>x.classList.toggle('on', x===c)); });
-  $('#pr').oninput = e => { pres = +e.target.value; const el=$('#pv'); el.textContent = pres; el.classList.remove('unset'); };
-  $('#fr').oninput = e => { feel = +e.target.value; const el=$('#fv'); el.textContent = feel; el.classList.remove('unset'); };
-  $('#er').oninput = e => { energy = +e.target.value; const el=$('#ev'); el.textContent = energy; el.classList.remove('unset'); };
-  const xr = document.getElementById('xr');
-  if(xr) xr.oninput = e => { extraVal = +e.target.value; const el=$('#xv'); el.textContent = extraVal; el.classList.remove('unset'); };
-  document.querySelectorAll('#xseg .chip').forEach(c => c.onclick = () => { extraVal = c.dataset.x === '1'; document.querySelectorAll('#xseg .chip').forEach(x=>x.classList.toggle('on', x===c)); });
-  $('#psave').onclick = async () => {
-    if(!act || pres==null || feel==null || energy==null){ toast('Activity plus all three sliders'); return; }
-    if(extra && extraVal==null){ toast('One more: '+extra.label); return; }
-    const row = { activity: act, presence: pres, feeling: feel, energy: energy, source: PING_SOURCE };
-    if(extra){ row.extra_key = extra.key; row.extra_value = extraVal; }
-    const { error } = await sb.from('pings').insert(row);
-    if(error){ toast(error.message); return; }
-    toast('Logged'); renderPing();
-  };
-  sb.from('pings').select('id', { count: 'exact', head: true }).gte('answered_at', new Date().toISOString().slice(0,10)+'T00:00:00').then(r => { const el = document.getElementById('pcount'); if(el) el.textContent = (r.count||0) + ' pings today'; });
 }
 
 function renderSettings(){
@@ -526,7 +525,7 @@ function renderSettings(){
   ['outcomes','behaviors','defaults'].forEach(sec => {
     h += '<div class="card"><div class="qmeta" style="margin-bottom:8px">'+sec.toUpperCase()+'</div>';
     Q.filter(q=>q.section===sec).forEach(q => {
-      h += '<div class="defrow"><div><div style="font-size:14px">'+esc(q.label)+'</div><div class="qmeta">'+q.input_type+'</div></div><div class="seg"><button class="ghost" data-rn="'+q.id+'">Rename</button><button class="ghost" data-rt="'+q.id+'">Retire</button></div></div>';
+      h += '<div class="defrow"><div><div style="font-size:14px">'+esc(q.label)+'</div><div class="qmeta">'+q.input_type+(q.in_morning?' · morning':'')+(q.in_evening===false?' · morning only':'')+'</div></div><div class="seg"><button class="ghost" data-rn="'+q.id+'">Rename</button><button class="ghost" data-rt="'+q.id+'">Retire</button></div></div>';
     });
     h += '</div>';
   });
