@@ -270,11 +270,47 @@ function renderMorning(){
   h += '<div style="height:10px"></div>';
   if(!MQ.length){ h += '<div class="card"><div class="small">No questions are flagged for the morning check-in.</div></div>'; }
   MQ.forEach(q => h += control(q));
-  h += '<button class="big" id="msave">'+(moExisting?'Update this morning':'Save morning')+'</button><div style="height:8px"></div>';
+  h += '<button class="big" id="msave">'+(moExisting?'Update this morning':'Save morning')+'</button>';
+  h += pingWidgetHtml();
+  h += '<div style="height:8px"></div>';
   app.innerHTML = h;
   tabBar();
   wire();
   const sv = document.getElementById('msave'); if(sv) sv.onclick = saveMorning;
+  wirePing();
+}
+
+function pingWidgetHtml(){
+  return '<div style="height:10px"></div><button class="ghost" id="pingBtn" style="width:100%">+ Add a ping</button>'
+    + '<div class="card" id="pingCard" style="display:none;margin-top:10px">'
+    + '<div class="qlabel">What is going on right now?</div>'
+    + '<div class="help">Saved with the current time. Separate from your survey answers, no need to fill this in.</div>'
+    + '<textarea id="pingText" placeholder="What you are doing, how you are feeling..."></textarea>'
+    + '<button class="big" id="pingSave">Save ping</button>'
+    + '</div>';
+}
+
+function wirePing(){
+  const btn = document.getElementById('pingBtn');
+  const card = document.getElementById('pingCard');
+  if(btn) btn.onclick = () => {
+    const showing = card.style.display !== 'none';
+    card.style.display = showing ? 'none' : 'block';
+    if(!showing){ const ta = document.getElementById('pingText'); if(ta) ta.focus(); }
+  };
+  const sv = document.getElementById('pingSave');
+  if(sv) sv.onclick = async () => {
+    const ta = document.getElementById('pingText');
+    const t = ta.value.trim();
+    if(!t){ toast('Type something first'); return; }
+    sv.disabled = true;
+    const { error } = await sb.from('pings').insert({ note: t, answered_at: new Date().toISOString(), source: 'manual' });
+    sv.disabled = false;
+    if(error){ toast(error.message); return; }
+    ta.value = '';
+    card.style.display = 'none';
+    toast('Ping saved');
+  };
 }
 
 async function saveMorning(){
@@ -308,12 +344,15 @@ async function renderToday(){
   h += '</div>';
   h += '<div id="recall"></div>';
   h += '<div class="card"><div class="qlabel">Anything worth noting? <span class="qmeta">optional</span></div><textarea id="note">'+esc(note)+'</textarea></div>';
-  h += '<button class="big" id="save">'+(existing?'Update today':'Save today')+'</button><div style="height:8px"></div>';
+  h += '<button class="big" id="save">'+(existing?'Update today':'Save today')+'</button>';
+  h += pingWidgetHtml();
+  h += '<div style="height:8px"></div>';
   app.innerHTML = h;
   tabBar();
   wire();
   const sv = document.getElementById('save'); if(sv) sv.onclick = save;
   const nt = document.getElementById('note'); if(nt) nt.oninput = e => note = e.target.value;
+  wirePing();
   const { data: week } = await sb.from('daily_entries').select('entry_date').gte('entry_date', new Date(Date.now()-6*86400000).toISOString().slice(0,10));
   const have = new Set((week||[]).map(r=>r.entry_date));
   let dh = '';
