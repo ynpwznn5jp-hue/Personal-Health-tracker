@@ -70,17 +70,35 @@ const app = $('#app');
 let Q = [], answers = {}, touched = new Set(), loaded = new Set(), branchTx = {}, note = '', existing = false;
 let evA = {}, evT = new Set(), evL = new Set();
 let moA = {}, moT = new Set(), moL = new Set(), moExisting = false;
+let viewDate = null, evDraft = false, moDraft = false;
+const MIN_DATE = '2026-08-19';
 const bootHour = new Date().getHours();
 let tab = location.hash === '#morning' ? 'morning' : (location.hash === '#evening' ? 'today' : ((bootHour >= 4 && bootHour < 14) ? 'morning' : 'today'));
 
 function entryDate(){ const d = new Date(Date.now() - 4*3600*1000); const p = n => String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
+function curDate(){ return viewDate || entryDate(); }
+function dkey(kind, d){ return 'lt_draft_v1_' + kind + '_' + d; }
+function readDraft(kind, d){ try{ const r = localStorage.getItem(dkey(kind, d)); return r ? JSON.parse(r) : null; }catch(e){ return null; } }
+function writeDraft(kind, d, obj){ try{ localStorage.setItem(dkey(kind, d), JSON.stringify(obj)); }catch(e){} }
+function clearDraft(kind, d){ try{ localStorage.removeItem(dkey(kind, d)); }catch(e){} }
+function saveDraft(){
+  const d = curDate();
+  if(tab === 'today'){ writeDraft('ev', d, { a: evA, t: Array.from(evT), b: branchTx, n: note, at: Date.now() }); evDraft = true; }
+  else if(tab === 'morning'){ writeDraft('mo', d, { a: moA, t: Array.from(moT), at: Date.now() }); moDraft = true; }
+  const bn = document.getElementById('draftbar'); if(bn) bn.style.display = 'block';
+}
+const DRAFT_SEL = '[data-k],[data-dk],[data-sk],[data-subk],[data-sck],[data-snk],[data-stk],[data-dnf],[data-nk],[data-bk],[data-nak],#note';
 function lateNight(){ return new Date().getHours() < 4; }
 function addDays(iso, n){ const t = new Date(iso+'T12:00:00'); t.setDate(t.getDate()+n); const p = x => String(x).padStart(2,'0'); return t.getFullYear()+'-'+p(t.getMonth()+1)+'-'+p(t.getDate()); }
 function toast(t){ const el = $('#toast'); el.textContent = t; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'), 1800); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function stackItems(q){ return (q.options && q.options.stack) || []; }
 function evQs(){ return Q.filter(q => q.in_evening !== false); }
-function moQs(){ return Q.filter(q => q.in_morning === true).map(q => Object.assign({}, q, { label: q.morning_label || q.label, branch: (q.branch && q.branch.type === 'na_toggle') ? q.branch : null })); }
+function moQs(){ return Q.filter(q => q.in_morning === true).map(q => Object.assign({}, q, { label: q.morning_label || q.label, branch: (q.branch && (q.branch.type === 'na_toggle' || q.branch.morning === true)) ? q.branch : null })); }
+function isAns(v){ return !(v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)); }
+function toArr(v){ return Array.isArray(v) ? v : (v == null || v === '' ? [] : [v]); }
+function isMulti(q){ return !!(q.branch && q.branch.type === 'multi_select'); }
+function defaultsOrdered(list){ return list.map((q, i) => ({ q, i })).sort((a, b) => ((a.q.default_value === true ? 0 : 1) - (b.q.default_value === true ? 0 : 1)) || (a.i - b.i)).map(x => x.q); }
 
 async function boot(){
   const { data:{ session } } = await sb.auth.getSession();
@@ -103,8 +121,8 @@ async function loadAll(){
   const { data: qs, error } = await sb.from('survey_questions').select('*').eq('active', true).order('sort_order');
   if(error){ toast(error.message); return; }
   Q = qs || [];
-  evA = {}; evT = new Set(); evL = new Set(); moA = {}; moT = new Set(); moL = new Set(); branchTx = {}; note=''; existing = false; moExisting = false;
-  const d = entryDate();
+  evA = {}; evT = new Set(); evL = new Set(); moA = {}; moT = new Set(); moL = new Set(); branchTx = {}; note=''; existing = false; moExisting = false; evDraft = false; moDraft = false;
+  const d = curDate();
   const byId = {}; Q.forEach(q => byId[q.id] = q);
   const { data: ent } = await sb.from('daily_entries').select('note').eq('entry_date', d).maybeSingle();
   if(ent){ existing = true; note = ent.note || ''; }
@@ -116,7 +134,38 @@ async function loadAll(){
   (mans||[]).forEach(a => { const q = byId[a.question_id]; if(q){ moA[q.key] = a.value; moL.add(q.key); if(a.touched) moT.add(q.key); } });
   const { data: att } = await sb.from('attributions').select('question_id,body').eq('entry_date', d);
   (att||[]).forEach(a => { const q = byId[a.question_id]; if(q) branchTx[q.key] = a.body; });
+  const ed = readDraft('ev', d);
+  if(ed && ed.a){ evA = ed.a; evT = new Set(ed.t || []); branchTx = ed.b || {}; note = ed.n || ''; evDraft = true; }
+  const md = readDraft('mo', d);
+  if(md && md.a){ moA = md.a; moT = new Set(md.t || []); moDraft = true; }
 }
+async function goDate(nd){
+  const t = entryDate();
+  if(!nd || nd > t) nd = t;
+  if(nd < MIN_DATE) nd = MIN_DATE;
+  viewDate = (nd === t) ? null : nd;
+  await loadAll(); render();
+}
+function dateNav(){
+  const t = entryDate(), d = curDate();
+  let h = '<div class="row" id="datenav" style="margin-top:12px;gap:8px"><button class="ghost" id="dprev"'+(d<=MIN_DATE?' disabled':'')+'>&lsaquo; Prev</button>'
+    + '<input type="date" id="dpick" value="'+d+'" min="'+MIN_DATE+'" max="'+t+'" style="width:auto;flex:1;margin:0;text-align:center">'
+    + '<button class="ghost" id="dnext"'+(d>=t?' disabled':'')+'>Next &rsaquo;</button></div>';
+  if(d !== t) h += '<div class="small" style="margin-top:6px">Viewing a past day. <a href="#" id="dtoday" style="color:var(--amb)">Back to today</a></div>';
+  const isDraft = tab === 'today' ? evDraft : moDraft;
+  h += '<div class="card" id="draftbar" style="display:'+(isDraft?'block':'none')+';margin-top:10px;border-color:var(--amb)"><div class="qlabel">Draft, not submitted</div><div class="help">Saved on this phone only. Nothing goes to the database until you tap the save button at the bottom.</div><button class="ghost" id="ddiscard" style="margin-top:8px">Discard draft</button></div>';
+  return h;
+}
+function wireDateNav(){
+  const pv = document.getElementById('dprev'), nx = document.getElementById('dnext'), pk = document.getElementById('dpick'), td = document.getElementById('dtoday'), dc = document.getElementById('ddiscard');
+  if(pv) pv.onclick = () => goDate(addDays(curDate(), -1));
+  if(nx) nx.onclick = () => goDate(addDays(curDate(), 1));
+  if(pk) pk.onchange = () => { if(pk.value) goDate(pk.value); };
+  if(td) td.onclick = (e) => { e.preventDefault(); goDate(entryDate()); };
+  if(dc) dc.onclick = async () => { clearDraft(tab === 'today' ? 'ev' : 'mo', curDate()); await loadAll(); render(); toast('Draft discarded'); };
+}
+app.addEventListener('click', e => { if(e.target.closest && e.target.closest(DRAFT_SEL) && (tab === 'today' || tab === 'morning')) saveDraft(); });
+app.addEventListener('input', e => { if(e.target.closest && e.target.closest(DRAFT_SEL) && (tab === 'today' || tab === 'morning')) saveDraft(); });
 
 function render(){
   if(tab==='today') renderToday(); else if(tab==='morning') renderMorning(); else renderSettings();
@@ -129,10 +178,16 @@ function tabBar(){
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
 }
 
-function defOf(q){ return q.default_value; }
+function defOf(q){ return isMulti(q) ? null : q.default_value; }
 
 function control(q){
   const key = q.key, v = answers[key];
+  if(q.input_type === 'slider' && Array.isArray(q.options) && q.options.length){
+    let h = '<div class="qlabel">'+esc(q.label)+'</div>'+(q.help_text?'<div class="help">'+esc(q.help_text)+'</div>':'')+'<div class="chips">';
+    q.options.forEach(o => { h += '<button class="chip '+(v===o.value?'on':'')+'" data-k="'+key+'" data-c="schip" data-v="'+esc(o.value)+'">'+esc(o.label)+'</button>'; });
+    h += '</div>';
+    return '<div class="card">'+h+'</div>';
+  }
   if(q.input_type === 'slider'){
     const has = (key in answers);
     let h = '<div class="row"><div><div class="qlabel">'+esc(q.label)+'</div>'+(q.help_text?'<div class="help">'+esc(q.help_text)+'</div>':'')+'</div><div class="val '+(has?'':'unset')+'" id="v_'+key+'">'+(has?v:'–')+'</div></div>';
@@ -168,8 +223,9 @@ function control(q){
   }
   if(q.input_type === 'select'){
     const vv = (key in answers) ? v : defOf(q);
-    let h = '<div class="qlabel">'+esc(q.label)+'</div>'+(q.help_text?'<div class="help">'+esc(q.help_text)+'</div>':'')+'<div class="chips">';
-    (q.options||[]).forEach(o => { h += '<button class="chip '+(vv===o.value?'on':'')+'" data-k="'+key+'" data-c="sel" data-v="'+esc(o.value)+'">'+esc(o.label)+'</button>'; });
+    const multi = isMulti(q), vArr = toArr(vv);
+    let h = '<div class="qlabel">'+esc(q.label)+'</div>'+(q.help_text?'<div class="help">'+esc(q.help_text)+'</div>':'')+(multi?'<div class="help">Tap all that apply</div>':'')+'<div class="chips">';
+    (q.options||[]).forEach(o => { h += '<button class="chip '+((multi ? vArr.indexOf(o.value) >= 0 : vv===o.value)?'on':'')+'" data-k="'+key+'" data-c="sel" data-v="'+esc(o.value)+'">'+esc(o.label)+'</button>'; });
     h += '</div>';
     return '<div class="card">'+h+'</div>';
   }
@@ -208,8 +264,9 @@ function detailBranch(q, on){
     } else if(f.type === 'toggle'){
       h += '<div class="help" style="margin-top:8px">'+esc(f.label)+'</div><div class="seg" style="margin-top:6px"><button class="chip '+(val(f)===true?'on':'')+'" data-dk="'+key+'" data-df="'+f.key+'" data-dv="__yes">Yes</button><button class="chip '+(val(f)===false?'on':'')+'" data-dk="'+key+'" data-df="'+f.key+'" data-dv="__no">No</button></div>';
     } else {
+      const multi = f.multi === true, mArr = toArr(val(f));
       h += '<div class="help" style="margin-top:8px">'+esc(f.label)+'</div><div class="chips">';
-      (f.options||[]).forEach(o => { h += '<button class="chip '+(val(f)===o.value?'on':'')+'" data-dk="'+key+'" data-df="'+f.key+'" data-dv="'+esc(o.value)+'">'+esc(o.label)+'</button>'; });
+      (f.options||[]).forEach(o => { h += '<button class="chip '+((multi ? mArr.indexOf(o.value) >= 0 : val(f)===o.value)?'on':'')+'" data-dk="'+key+'" data-df="'+f.key+'" data-dv="'+esc(o.value)+'"'+(multi?' data-dm="1"':'')+'>'+esc(o.label)+'</button>'; });
       h += '</div>';
     }
   });
@@ -271,9 +328,9 @@ function defRow(q){
 
 function renderMorning(){
   answers = moA; touched = moT; loaded = moL;
-  const d = entryDate();
+  const d = curDate();
   const MQ = moQs();
-  let h = '<header><h1>'+(moExisting?'Update this morning':'Morning check-in')+'</h1><div class="date">'+d+' · how things are so far today</div></header>';
+  let h = '<header><h1>'+(moExisting?'Update this morning':'Morning check-in')+'</h1><div class="date">'+d+' · how things are so far today</div>'+dateNav()+'</header>';
   h += '<div style="height:10px"></div>';
   if(!MQ.length){ h += '<div class="card"><div class="small">No questions are flagged for the morning check-in.</div></div>'; }
   MQ.forEach(q => h += control(q));
@@ -283,6 +340,7 @@ function renderMorning(){
   app.innerHTML = h;
   tabBar();
   wire();
+  wireDateNav();
   const sv = document.getElementById('msave'); if(sv) sv.onclick = saveMorning;
   wirePing();
 }
@@ -322,41 +380,47 @@ function wirePing(){
 
 async function saveMorning(){
   const MQ = moQs();
-  const missing = [];
-  MQ.forEach(q => {
-    if(!(q.key in answers)){ if(defOf(q) != null) answers[q.key] = defOf(q); else missing.push(q.label); }
-  });
-  if(missing.length){ toast('Missing: ' + missing.join(', ')); return; }
-  const d = entryDate();
+  MQ.forEach(q => { if(!(q.key in answers) && defOf(q) != null) answers[q.key] = defOf(q); });
+  const have = MQ.filter(q => isAns(answers[q.key]));
+  const none = MQ.filter(q => !isAns(answers[q.key]));
+  const d = curDate();
   const { error: e1 } = await sb.from('morning_entries').upsert({ entry_date: d, submitted_at: new Date().toISOString() }, { onConflict: 'entry_date' });
   if(e1){ toast(e1.message); return; }
-  const rows = MQ.map(q => ({ entry_date: d, question_id: q.id, value: answers[q.key], touched: touched.has(q.key) || loaded.has(q.key) }));
-  const { error: e2 } = await sb.from('morning_answers').upsert(rows, { onConflict: 'entry_date,question_id' });
-  if(e2){ toast(e2.message); return; }
-  moExisting = true; toast('Morning saved'); render();
+  const rows = have.map(q => ({ entry_date: d, question_id: q.id, value: answers[q.key], touched: touched.has(q.key) || loaded.has(q.key) }));
+  if(rows.length){
+    const { error: e2 } = await sb.from('morning_answers').upsert(rows, { onConflict: 'entry_date,question_id' });
+    if(e2){ toast(e2.message); return; }
+  }
+  if(none.length){
+    const { error: e3 } = await sb.from('morning_answers').delete().eq('entry_date', d).in('question_id', none.map(q => q.id));
+    if(e3){ toast(e3.message); return; }
+  }
+  moExisting = true; clearDraft('mo', d); moDraft = false; toast('Morning saved'); render();
 }
 
 async function renderToday(){
   answers = evA; touched = evT; loaded = evL;
-  const d = entryDate();
+  const d = curDate();
+  const isToday = d === entryDate();
   const EQ = evQs();
-  let h = '<header><h1>'+(existing?'Update today':'Evening check-in')+'</h1><div class="date">'+d+(lateNight()?' · after midnight, logging for yesterday':'')+'</div><div class="dots" id="dots"></div></header>';
+  let h = '<header><h1>'+(existing?(isToday?'Update today':'Update this day'):'Evening check-in')+'</h1><div class="date">'+d+((isToday && lateNight())?' · after midnight, logging for yesterday':'')+'</div>'+dateNav()+'<div class="dots" id="dots"></div></header>';
   h += '<div id="monthly"></div>';
   h += '<div class="eyebrow">Outcomes</div>';
   EQ.filter(q=>q.section==='outcomes').forEach(q => h += control(q));
   h += '<div class="eyebrow">Behaviors</div>';
   EQ.filter(q=>q.section==='behaviors').forEach(q => h += control(q));
   h += '<div class="eyebrow">Quick confirm · tap only if different</div><div class="card">';
-  EQ.filter(q=>q.section==='defaults').forEach(q => h += defRow(q));
+  defaultsOrdered(EQ.filter(q=>q.section==='defaults')).forEach(q => h += defRow(q));
   h += '</div>';
   h += '<div id="recall"></div>';
   h += '<div class="card"><div class="qlabel">Anything worth noting? <span class="qmeta">optional</span></div><textarea id="note">'+esc(note)+'</textarea></div>';
-  h += '<button class="big" id="save">'+(existing?'Update today':'Save today')+'</button>';
+  h += '<button class="big" id="save">'+(existing?(isToday?'Update today':'Update this day'):(isToday?'Save today':'Save this day'))+'</button>';
   h += pingWidgetHtml();
   h += '<div style="height:8px"></div>';
   app.innerHTML = h;
   tabBar();
   wire();
+  wireDateNav();
   const sv = document.getElementById('save'); if(sv) sv.onclick = save;
   const nt = document.getElementById('note'); if(nt) nt.oninput = e => note = e.target.value;
   wirePing();
@@ -365,7 +429,7 @@ async function renderToday(){
   let dh = '';
   for(let i=6;i>=0;i--){ const dd = new Date(Date.now()-i*86400000).toISOString().slice(0,10); dh += '<div class="dot '+(have.has(dd)?'on':'')+'"></div>'; }
   const dotsEl = document.getElementById('dots'); if(dotsEl) dotsEl.innerHTML = dh;
-  loadMonthly(d); loadRecall(d);
+  if(isToday){ loadMonthly(d); loadRecall(d); }
 }
 
 async function loadRecall(d){
@@ -437,6 +501,16 @@ function wire(){
     if(q.branch && q.branch.type==='extreme_text'){ const b = document.getElementById('b_'+k); if(b) b.classList.toggle('show', v >= q.branch.high_at || v <= q.branch.low_at); }
     if(q.branch && q.branch.type==='na_toggle'){ const nb = document.querySelector('[data-nak="'+k+'"]'); if(nb) nb.classList.toggle('on', v===0); }
   });
+  document.querySelectorAll('[data-c=slider]').forEach(el => el.addEventListener('click', () => {
+    if(!(el.dataset.k in answers) && el.oninput) el.oninput();
+  }));
+  document.querySelectorAll('[data-c=schip]').forEach(el => el.onclick = () => {
+    const k = el.dataset.k, nv = +el.dataset.v;
+    const was = el.classList.contains('on');
+    el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+    if(was){ delete answers[k]; touched.delete(k); }
+    else { answers[k] = nv; touched.add(k); el.classList.add('on'); }
+  });
   document.querySelectorAll('[data-c=na]').forEach(el => el.onclick = () => {
     const k = el.dataset.nak; answers[k] = 0; touched.add(k);
     const vb = document.getElementById('v_'+k); if(vb){ vb.textContent = '0'; vb.classList.remove('unset'); }
@@ -485,6 +559,15 @@ function wire(){
     if(v === '__yes') v = true; else if(v === '__no') v = false;
     let cur = answers[k];
     if(!cur || typeof cur !== 'object'){ cur = { on: true }; answers[k] = cur; }
+    if(el.dataset.dm){
+      const arr = toArr(cur[f]).slice();
+      const i = arr.indexOf(v);
+      if(i >= 0) arr.splice(i, 1); else arr.push(v);
+      if(arr.length) cur[f] = arr; else delete cur[f];
+      el.classList.toggle('on', i < 0);
+      touched.add(k);
+      return;
+    }
     const was = el.classList.contains('on');
     el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
     if(was){ delete cur[f]; } else { cur[f] = v; el.classList.add('on'); }
@@ -535,8 +618,20 @@ function wire(){
     touched.add(el.dataset.stk);
   });
   document.querySelectorAll('[data-c=sel]').forEach(el => el.onclick = () => {
-    const k = el.dataset.k; answers[k] = el.dataset.v; touched.add(k);
-    el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c === el));
+    const k = el.dataset.k, v = el.dataset.v; const q = Q.find(x=>x.key===k);
+    if(isMulti(q)){
+      const base = (k in answers) ? answers[k] : defOf(q);
+      const arr = toArr(base).slice();
+      const i = arr.indexOf(v);
+      if(i >= 0) arr.splice(i, 1); else arr.push(v);
+      if(arr.length){ answers[k] = arr; touched.add(k); } else { delete answers[k]; touched.delete(k); }
+      el.classList.toggle('on', i < 0);
+      return;
+    }
+    const was = el.classList.contains('on');
+    el.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+    if(was){ delete answers[k]; touched.delete(k); }
+    else { answers[k] = v; touched.add(k); el.classList.add('on'); }
   });
   document.querySelectorAll('[data-c=num]').forEach(el => el.oninput = () => { const k = el.dataset.k; if(el.value !== ''){ answers[k] = +el.value; touched.add(k); } });
   document.querySelectorAll('[data-c=text]').forEach(el => el.oninput = () => { const k = el.dataset.k; answers[k] = el.value; touched.add(k); });
@@ -546,13 +641,9 @@ function wire(){
 
 async function save(){
   const EQ = evQs();
-  const missing = [];
   EQ.forEach(q => {
-    if(q.section === 'defaults') { if(!(q.key in answers)) answers[q.key] = defOf(q); return; }
-    if(defOf(q) == null && !(q.key in answers)) missing.push(q.label);
     if(!(q.key in answers) && defOf(q) != null) answers[q.key] = defOf(q);
   });
-  if(missing.length){ toast('Missing: ' + missing.join(', ')); return; }
   EQ.forEach(q => {
     if(q.branch && q.branch.type === 'stack_list'){
       const v = answers[q.key], items = stackItems(q);
@@ -560,17 +651,25 @@ async function save(){
       else if(v === false) answers[q.key] = { taken: false, took: [], stack: items };
     }
   });
-  const d = entryDate();
+  const d = curDate();
   const { error: e1 } = await sb.from('daily_entries').upsert({ entry_date: d, note: note || null, submitted_at: new Date().toISOString() }, { onConflict: 'entry_date' });
   if(e1){ toast(e1.message); return; }
-  const rows = EQ.map(q => ({ entry_date: d, question_id: q.id, value: answers[q.key], touched: touched.has(q.key) || loaded.has(q.key) }));
-  const { error: e2 } = await sb.from('daily_answers').upsert(rows, { onConflict: 'entry_date,question_id' });
-  if(e2){ toast(e2.message); return; }
+  const have = EQ.filter(q => isAns(answers[q.key]));
+  const none = EQ.filter(q => !isAns(answers[q.key]));
+  const rows = have.map(q => ({ entry_date: d, question_id: q.id, value: answers[q.key], touched: touched.has(q.key) || loaded.has(q.key) }));
+  if(rows.length){
+    const { error: e2 } = await sb.from('daily_answers').upsert(rows, { onConflict: 'entry_date,question_id' });
+    if(e2){ toast(e2.message); return; }
+  }
+  if(none.length){
+    const { error: e3 } = await sb.from('daily_answers').delete().eq('entry_date', d).in('question_id', none.map(q => q.id));
+    if(e3){ toast(e3.message); return; }
+  }
   await sb.from('attributions').delete().eq('entry_date', d);
   const atts = [];
   EQ.forEach(q => { if(q.branch && q.branch.type==='extreme_text' && branchTx[q.key] && branchTx[q.key].trim()){ const v = answers[q.key]; if(v >= q.branch.high_at || v <= q.branch.low_at){ atts.push({ entry_date: d, question_id: q.id, direction: v >= q.branch.high_at ? 'high' : 'low', body: branchTx[q.key].trim() }); } } });
   if(atts.length){ await sb.from('attributions').insert(atts); }
-  existing = true; toast('Saved'); render();
+  existing = true; clearDraft('ev', d); evDraft = false; toast('Saved'); render();
 }
 
 function renderSettings(){
